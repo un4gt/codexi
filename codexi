@@ -128,14 +128,14 @@ platform_candidates() {
     *) die "Invalid CODEXI_LIBC: $libc_mode (supported: auto|gnu|musl)" ;;
   esac
 
-  local primary fallback
-  primary="$(libc_guess)"
-  if [[ "$primary" == "musl" ]]; then
-    fallback="gnu"
-  else
-    fallback="musl"
+  # Auto mode: prefer musl for maximum portability across Linux distributions.
+  # On glibc systems, fall back to gnu if the musl asset is not available.
+  # On musl systems, only try musl by default.
+  if [[ "$(libc_guess)" == "musl" ]]; then
+    printf '%s\n' "unknown-linux-musl"
+    return 0
   fi
-  printf '%s\n' "unknown-linux-${primary}" "unknown-linux-${fallback}"
+  printf '%s\n' "unknown-linux-musl" "unknown-linux-gnu"
 }
 
 release_base_url() {
@@ -373,7 +373,7 @@ Env (codex):
   CODEXI_TAG           default: latest
   CODEXI_INSTALL_DIR   default: ~/.local/bin
   CODEXI_BIN_PATH      default: ~/.local/bin/codex
-  CODEXI_LIBC          default: auto (auto|gnu|musl)
+  CODEXI_LIBC          default: auto (auto=prefer musl, fallback gnu; or set gnu|musl)
   CODEXI_PLATFORM      override platform (e.g. unknown-linux-gnu)
   CODEXI_NO_PROGRESS   set to 1 to disable download progress output
 
