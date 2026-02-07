@@ -1,0 +1,397 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROG="codexi"
+CODEXI_VERSION="dev"
+
+CODEXI_REPO_DEFAULT="openai/codex"
+CODEXI_SELF_REPO_DEFAULT="un4gt/codexi"
+CODEXI_SELF_ASSET_DEFAULT="codexi"
+
+log() { printf '%s: %s\n' "$PROG" "$*" >&2; }
+die() { log "ERROR: $*"; exit 1; }
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+require_downloader() {
+  have curl && return 0
+  have wget && return 0
+  die "需要 curl 或 wget 用于下载"
+}
+
+http_get() {
+  local url="$1"
+  local out="$2"
+  rm -f "$out"
+  if have curl; then
+    curl -fsSL --retry 3 --connect-timeout 10 --max-time 600 -o "$out" "$url"
+    return 0
+  fi
+  wget -O "$out" -t 3 -T 10 "$url"
+}
+
+url_exists() {
+  local url="$1"
+  if have curl; then
+    curl -fsSL -L --connect-timeout 10 --max-time 30 -r 0-0 -o /dev/null "$url"
+    return 0
+  fi
+  wget -qO- -t 1 -T 10 --header="Range: bytes=0-0" "$url" >/dev/null
+}
+
+make_tmpdir() {
+  local dir
+  if have mktemp; then
+    dir="$(mktemp -d 2>/dev/null || true)"
+    if [[ -n "$dir" && -d "$dir" ]]; then
+      printf '%s\n' "$dir"
+      return 0
+    fi
+    dir="$(mktemp -d -t "${PROG}.XXXXXXXX" 2>/dev/null || true)"
+    if [[ -n "$dir" && -d "$dir" ]]; then
+      printf '%s\n' "$dir"
+      return 0
+    fi
+  fi
+  dir="${TMPDIR:-/tmp}/${PROG}.$$.$RANDOM"
+  mkdir -p "$dir"
+  printf '%s\n' "$dir"
+}
+
+install_file_atomic() {
+  local src="$1"
+  local dest="$2"
+  local dest_dir tmp
+  dest_dir="$(dirname "$dest")"
+  mkdir -p "$dest_dir"
+  tmp="${dest_dir}/.${PROG}.$(basename "$dest").tmp.$$.$RANDOM"
+  cp "$src" "$tmp"
+  chmod 0755 "$tmp"
+  mv -f "$tmp" "$dest"
+}
+
+ensure_linux() {
+  [[ "$(uname -s 2>/dev/null || true)" == "Linux" ]] || die "仅支持在 Linux 上运行"
+}
+
+detect_arch() {
+  local machine
+  machine="$(uname -m 2>/dev/null || true)"
+  case "$machine" in
+    x86_64) echo "x86_64" ;;
+    aarch64|arm64) echo "aarch64" ;;
+    *) die "不支持的架构: ${machine:-unknown}（仅支持 x86_64/aarch64）" ;;
+  esac
+}
+
+libc_guess() {
+  if have ldd; then
+    if ldd --version 2>&1 | grep -qi musl; then
+      echo "musl"
+      return 0
+    fi
+  fi
+  if compgen -G "/lib/ld-musl-*.so.1" >/dev/null || compgen -G "/usr/lib/ld-musl-*.so.1" >/dev/null; then
+    echo "musl"
+    return 0
+  fi
+  if have getconf; then
+    if getconf GNU_LIBC_VERSION >/dev/null 2>&1; then
+      echo "gnu"
+      return 0
+    fi
+  fi
+  echo "gnu"
+}
+
+platform_candidates() {
+  local platform_override="${CODEXI_PLATFORM:-}"
+  local libc_mode="${CODEXI_LIBC:-auto}"
+
+  if [[ -n "$platform_override" ]]; then
+    printf '%s\n' "$platform_override"
+    return 0
+  fi
+
+  case "$libc_mode" in
+    auto|"") ;;
+    gnu) printf '%s\n' "unknown-linux-gnu"; return 0 ;;
+    musl) printf '%s\n' "unknown-linux-musl"; return 0 ;;
+    *) die "无效的 CODEXI_LIBC: $libc_mode（可选: auto|gnu|musl）" ;;
+  esac
+
+  local primary fallback
+  primary="$(libc_guess)"
+  if [[ "$primary" == "musl" ]]; then
+    fallback="gnu"
+  else
+    fallback="musl"
+  fi
+  printf '%s\n' "unknown-linux-${primary}" "unknown-linux-${fallback}"
+}
+
+release_base_url() {
+  local repo="$1"
+  local tag="${2:-}"
+  if [[ -n "$tag" ]]; then
+    printf 'https://github.com/%s/releases/download/%s' "$repo" "$tag"
+  else
+    printf 'https://github.com/%s/releases/latest/download' "$repo"
+  fi
+}
+
+extract_codex_from_tar_gz() {
+  local archive="$1"
+  local outdir="$2"
+  tar -xzf "$archive" -C "$outdir"
+}
+
+extract_codex_from_zst() {
+  local archive="$1"
+  local outdir="$2"
+  have zstd || die "发现 .zst 资产，但未安装 zstd（请先安装 zstd）"
+  zstd -dq "$archive" -o "$outdir/codex.tar"
+  tar -xf "$outdir/codex.tar" -C "$outdir"
+}
+
+cmd_install_or_update() {
+  ensure_linux
+  require_downloader
+  have tar || die "需要 tar 用于解压（请先安装 tar）"
+
+  local repo="${CODEXI_REPO:-$CODEXI_REPO_DEFAULT}"
+  local install_dir="${CODEXI_INSTALL_DIR:-$HOME/.local/bin}"
+  local bin_path="${CODEXI_BIN_PATH:-$install_dir/codex}"
+  local tag="${CODEXI_TAG:-}"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --tag) shift; tag="${1:-}"; [[ -n "$tag" ]] || die "--tag 需要参数" ;;
+      --repo) shift; repo="${1:-}"; [[ -n "$repo" ]] || die "--repo 需要参数" ;;
+      --bin) shift; bin_path="${1:-}"; [[ -n "$bin_path" ]] || die "--bin 需要参数" ;;
+      -h|--help) cmd_help; return 0 ;;
+      *) die "未知参数: $1" ;;
+    esac
+    shift
+  done
+
+  local arch base_url tmpdir platform asset tar_url zst_url
+  arch="$(detect_arch)"
+  base_url="$(release_base_url "$repo" "$tag")"
+  tmpdir="$(make_tmpdir)"
+
+  local cleaned=0
+  cleanup() {
+    [[ "$cleaned" == "1" ]] && return 0
+    cleaned=1
+    rm -rf "$tmpdir"
+  }
+  trap cleanup EXIT
+
+  local zst_found_without_zstd=0
+  local tried=()
+
+  while IFS= read -r platform; do
+    asset="codex-${arch}-${platform}"
+    tried+=("$asset")
+
+    tar_url="${base_url}/${asset}.tar.gz"
+    if url_exists "$tar_url"; then
+      http_get "$tar_url" "$tmpdir/codex.tar.gz" || die "下载失败: $tar_url"
+      extract_codex_from_tar_gz "$tmpdir/codex.tar.gz" "$tmpdir"
+      [[ -f "$tmpdir/$asset" ]] || die "解压完成但未找到二进制: $asset"
+      install_file_atomic "$tmpdir/$asset" "$bin_path"
+      log "Installed codex to: $bin_path"
+      cleanup
+      trap - EXIT
+      return 0
+    fi
+
+    zst_url="${base_url}/${asset}.zst"
+    if have zstd; then
+      if url_exists "$zst_url"; then
+        http_get "$zst_url" "$tmpdir/codex.zst" || die "下载失败: $zst_url"
+        extract_codex_from_zst "$tmpdir/codex.zst" "$tmpdir"
+        [[ -f "$tmpdir/$asset" ]] || die "解压完成但未找到二进制: $asset"
+        install_file_atomic "$tmpdir/$asset" "$bin_path"
+        log "Installed codex to: $bin_path"
+        cleanup
+        trap - EXIT
+        return 0
+      fi
+    else
+      if url_exists "$zst_url"; then
+        zst_found_without_zstd=1
+      fi
+    fi
+  done < <(platform_candidates)
+
+  if [[ "$zst_found_without_zstd" == "1" ]]; then
+    die "找到了可用的 .zst 资产，但当前未安装 zstd；请安装 zstd 后重试，或设置 CODEXI_PLATFORM/CODEXI_LIBC 使用可用的 .tar.gz"
+  fi
+
+  die "未找到可用的 Linux 资产（repo=$repo tag=${tag:-latest} arch=$arch）。已尝试: ${tried[*]}"
+}
+
+cmd_uninstall() {
+  local install_dir="${CODEXI_INSTALL_DIR:-$HOME/.local/bin}"
+  local bin_path="${CODEXI_BIN_PATH:-$install_dir/codex}"
+  if [[ -e "$bin_path" ]]; then
+    rm -f "$bin_path"
+    log "Removed: $bin_path"
+  else
+    log "Nothing to uninstall (not found): $bin_path"
+  fi
+}
+
+cmd_status() {
+  local install_dir="${CODEXI_INSTALL_DIR:-$HOME/.local/bin}"
+  local bin_path="${CODEXI_BIN_PATH:-$install_dir/codex}"
+  printf 'codex: %s\n' "$bin_path"
+  if [[ -x "$bin_path" ]]; then
+    printf 'status: installed\n'
+    printf 'version: %s\n' "$("$bin_path" --version 2>/dev/null || echo "unknown")"
+  else
+    printf 'status: not installed\n'
+  fi
+}
+
+self_path() {
+  if [[ -n "${CODEXI_SELF_BIN_PATH:-}" ]]; then
+    printf '%s\n' "$CODEXI_SELF_BIN_PATH"
+    return 0
+  fi
+  local p
+  p="$(command -v codexi 2>/dev/null || true)"
+  if [[ -n "$p" && -f "$p" ]]; then
+    printf '%s\n' "$p"
+    return 0
+  fi
+  if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+    printf '%s\n' "${BASH_SOURCE[0]}"
+    return 0
+  fi
+  die "无法确定 codexi 安装路径（可通过 CODEXI_SELF_BIN_PATH 指定）"
+}
+
+cmd_self_update() {
+  ensure_linux
+  require_downloader
+
+  local repo="${CODEXI_SELF_REPO:-$CODEXI_SELF_REPO_DEFAULT}"
+  local asset="${CODEXI_SELF_ASSET:-$CODEXI_SELF_ASSET_DEFAULT}"
+  local tag="${CODEXI_SELF_TAG:-}"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --tag) shift; tag="${1:-}"; [[ -n "$tag" ]] || die "--tag 需要参数" ;;
+      --repo) shift; repo="${1:-}"; [[ -n "$repo" ]] || die "--repo 需要参数" ;;
+      -h|--help) cmd_help; return 0 ;;
+      *) die "未知参数: $1" ;;
+    esac
+    shift
+  done
+
+  local dest url tmpdir tmpfile
+  dest="$(self_path)"
+  tmpdir="$(dirname "$dest")"
+  mkdir -p "$tmpdir"
+  tmpfile="${tmpdir}/.${PROG}.self.tmp.$$.$RANDOM"
+
+  if [[ -n "${CODEXI_SELF_URL:-}" ]]; then
+    url="$CODEXI_SELF_URL"
+  else
+    if [[ -n "$tag" ]]; then
+      url="https://github.com/${repo}/releases/download/${tag}/${asset}"
+    else
+      url="https://github.com/${repo}/releases/latest/download/${asset}"
+    fi
+  fi
+
+  http_get "$url" "$tmpfile" || die "self update 下载失败: $url"
+  [[ -s "$tmpfile" ]] || die "self update 下载文件为空: $url"
+  chmod 0755 "$tmpfile"
+  mv -f "$tmpfile" "$dest"
+  log "Updated codexi: $dest"
+}
+
+cmd_self_uninstall() {
+  local dest
+  dest="$(self_path)"
+  if [[ -e "$dest" ]]; then
+    rm -f "$dest"
+    log "Removed: $dest"
+  else
+    log "Nothing to uninstall (not found): $dest"
+  fi
+}
+
+cmd_self_status() {
+  local dest
+  dest="$(self_path)"
+  printf 'codexi: %s\n' "$dest"
+  printf 'version: %s\n' "$CODEXI_VERSION"
+}
+
+cmd_help() {
+  cat <<'H'
+codexi - codex Linux 裸安装器（bash）
+
+Usage:
+  codexi install [--tag TAG] [--repo OWNER/REPO] [--bin PATH]
+  codexi update  [--tag TAG] [--repo OWNER/REPO] [--bin PATH]
+  codexi uninstall
+  codexi status
+
+  codexi self update [--tag TAG] [--repo OWNER/REPO]
+  codexi self uninstall
+  codexi self status
+
+Env (codex):
+  CODEXI_REPO          default: openai/codex
+  CODEXI_TAG           default: latest
+  CODEXI_INSTALL_DIR   default: ~/.local/bin
+  CODEXI_BIN_PATH      default: ~/.local/bin/codex
+  CODEXI_LIBC          default: auto  (auto|gnu|musl)
+  CODEXI_PLATFORM       override platform (e.g. unknown-linux-gnu)
+
+Env (self):
+  CODEXI_SELF_REPO     default: un4gt/codexi
+  CODEXI_SELF_ASSET    default: codexi
+  CODEXI_SELF_TAG      default: latest
+  CODEXI_SELF_URL      override download URL
+  CODEXI_SELF_BIN_PATH override installed path for codexi
+H
+}
+
+cmd_version() {
+  printf '%s\n' "$CODEXI_VERSION"
+}
+
+cmd_self() {
+  local sub="${1:-help}"
+  shift || true
+  case "$sub" in
+    update) cmd_self_update "$@" ;;
+    uninstall) cmd_self_uninstall ;;
+    status) cmd_self_status ;;
+    help|-h|--help|"") cmd_help ;;
+    *) die "未知 self 子命令: $sub" ;;
+  esac
+}
+
+main() {
+  local cmd="${1:-help}"
+  shift || true
+  case "$cmd" in
+    install|update) cmd_install_or_update "$@" ;;
+    uninstall) cmd_uninstall ;;
+    status) cmd_status ;;
+    self) cmd_self "$@" ;;
+    help|-h|--help) cmd_help ;;
+    --version|version) cmd_version ;;
+    *) die "未知命令: $cmd（使用 --help 查看用法）" ;;
+  esac
+}
+
+main "$@"
