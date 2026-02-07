@@ -16,7 +16,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 require_downloader() {
   have curl && return 0
   have wget && return 0
-  die "需要 curl 或 wget 用于下载"
+  die "curl or wget is required for downloads"
 }
 
 http_get() {
@@ -24,10 +24,18 @@ http_get() {
   local out="$2"
   rm -f "$out"
   if have curl; then
-    curl -fsSL --retry 3 --connect-timeout 10 --max-time 600 -o "$out" "$url"
+    if [[ "${CODEXI_NO_PROGRESS:-0}" == "1" ]]; then
+      curl -fsSL --retry 3 --connect-timeout 10 --max-time 600 -o "$out" "$url"
+    else
+      curl --fail --location --show-error --progress-bar --retry 3 --connect-timeout 10 --max-time 600 -o "$out" "$url"
+    fi
     return 0
   fi
-  wget -O "$out" -t 3 -T 10 "$url"
+  if [[ "${CODEXI_NO_PROGRESS:-0}" == "1" ]]; then
+    wget -q -O "$out" -t 3 -T 10 "$url"
+  else
+    wget -O "$out" -t 3 -T 10 "$url"
+  fi
 }
 
 url_exists() {
@@ -71,7 +79,7 @@ install_file_atomic() {
 }
 
 ensure_linux() {
-  [[ "$(uname -s 2>/dev/null || true)" == "Linux" ]] || die "仅支持在 Linux 上运行"
+  [[ "$(uname -s 2>/dev/null || true)" == "Linux" ]] || die "This installer supports Linux only"
 }
 
 detect_arch() {
@@ -80,7 +88,7 @@ detect_arch() {
   case "$machine" in
     x86_64) echo "x86_64" ;;
     aarch64|arm64) echo "aarch64" ;;
-    *) die "不支持的架构: ${machine:-unknown}（仅支持 x86_64/aarch64）" ;;
+    *) die "Unsupported CPU architecture: ${machine:-unknown} (supported: x86_64, aarch64)" ;;
   esac
 }
 
@@ -117,7 +125,7 @@ platform_candidates() {
     auto|"") ;;
     gnu) printf '%s\n' "unknown-linux-gnu"; return 0 ;;
     musl) printf '%s\n' "unknown-linux-musl"; return 0 ;;
-    *) die "无效的 CODEXI_LIBC: $libc_mode（可选: auto|gnu|musl）" ;;
+    *) die "Invalid CODEXI_LIBC: $libc_mode (supported: auto|gnu|musl)" ;;
   esac
 
   local primary fallback
@@ -149,7 +157,7 @@ extract_codex_from_tar_gz() {
 extract_codex_from_zst() {
   local archive="$1"
   local outdir="$2"
-  have zstd || die "发现 .zst 资产，但未安装 zstd（请先安装 zstd）"
+  have zstd || die "Found a .zst asset but zstd is not installed (please install zstd)"
   zstd -dq "$archive" -o "$outdir/codex.tar"
   tar -xf "$outdir/codex.tar" -C "$outdir"
 }
@@ -157,7 +165,7 @@ extract_codex_from_zst() {
 cmd_install_or_update() {
   ensure_linux
   require_downloader
-  have tar || die "需要 tar 用于解压（请先安装 tar）"
+  have tar || die "tar is required for extraction (please install tar)"
 
   local repo="${CODEXI_REPO:-$CODEXI_REPO_DEFAULT}"
   local install_dir="${CODEXI_INSTALL_DIR:-$HOME/.local/bin}"
@@ -166,17 +174,19 @@ cmd_install_or_update() {
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --tag) shift; tag="${1:-}"; [[ -n "$tag" ]] || die "--tag 需要参数" ;;
-      --repo) shift; repo="${1:-}"; [[ -n "$repo" ]] || die "--repo 需要参数" ;;
-      --bin) shift; bin_path="${1:-}"; [[ -n "$bin_path" ]] || die "--bin 需要参数" ;;
+      --tag) shift; tag="${1:-}"; [[ -n "$tag" ]] || die "--tag requires a value" ;;
+      --repo) shift; repo="${1:-}"; [[ -n "$repo" ]] || die "--repo requires a value" ;;
+      --bin) shift; bin_path="${1:-}"; [[ -n "$bin_path" ]] || die "--bin requires a value" ;;
       -h|--help) cmd_help; return 0 ;;
-      *) die "未知参数: $1" ;;
+      *) die "Unknown argument: $1" ;;
     esac
     shift
   done
 
   local arch base_url tmpdir platform asset tar_url zst_url
+  log "Detecting platform..."
   arch="$(detect_arch)"
+  log "Arch: $arch"
   base_url="$(release_base_url "$repo" "$tag")"
   tmpdir="$(make_tmpdir)"
 
@@ -191,15 +201,20 @@ cmd_install_or_update() {
   local zst_found_without_zstd=0
   local tried=()
 
+  log "Searching for a matching release asset..."
   while IFS= read -r platform; do
     asset="codex-${arch}-${platform}"
     tried+=("$asset")
 
     tar_url="${base_url}/${asset}.tar.gz"
+    log "Checking ${asset}.tar.gz"
     if url_exists "$tar_url"; then
-      http_get "$tar_url" "$tmpdir/codex.tar.gz" || die "下载失败: $tar_url"
+      log "Downloading ${asset}.tar.gz"
+      http_get "$tar_url" "$tmpdir/codex.tar.gz" || die "Download failed: $tar_url"
+      log "Extracting..."
       extract_codex_from_tar_gz "$tmpdir/codex.tar.gz" "$tmpdir"
-      [[ -f "$tmpdir/$asset" ]] || die "解压完成但未找到二进制: $asset"
+      [[ -f "$tmpdir/$asset" ]] || die "Extracted archive but binary not found: $asset"
+      log "Installing to: $bin_path"
       install_file_atomic "$tmpdir/$asset" "$bin_path"
       log "Installed codex to: $bin_path"
       cleanup
@@ -209,10 +224,14 @@ cmd_install_or_update() {
 
     zst_url="${base_url}/${asset}.zst"
     if have zstd; then
+      log "Checking ${asset}.zst"
       if url_exists "$zst_url"; then
-        http_get "$zst_url" "$tmpdir/codex.zst" || die "下载失败: $zst_url"
+        log "Downloading ${asset}.zst"
+        http_get "$zst_url" "$tmpdir/codex.zst" || die "Download failed: $zst_url"
+        log "Extracting..."
         extract_codex_from_zst "$tmpdir/codex.zst" "$tmpdir"
-        [[ -f "$tmpdir/$asset" ]] || die "解压完成但未找到二进制: $asset"
+        [[ -f "$tmpdir/$asset" ]] || die "Extracted archive but binary not found: $asset"
+        log "Installing to: $bin_path"
         install_file_atomic "$tmpdir/$asset" "$bin_path"
         log "Installed codex to: $bin_path"
         cleanup
@@ -220,6 +239,7 @@ cmd_install_or_update() {
         return 0
       fi
     else
+      log "Checking ${asset}.zst (zstd not installed)"
       if url_exists "$zst_url"; then
         zst_found_without_zstd=1
       fi
@@ -227,10 +247,10 @@ cmd_install_or_update() {
   done < <(platform_candidates)
 
   if [[ "$zst_found_without_zstd" == "1" ]]; then
-    die "找到了可用的 .zst 资产，但当前未安装 zstd；请安装 zstd 后重试，或设置 CODEXI_PLATFORM/CODEXI_LIBC 使用可用的 .tar.gz"
+    die "A matching .zst asset exists, but zstd is not installed. Install zstd and retry, or use CODEXI_PLATFORM/CODEXI_LIBC to select a .tar.gz asset."
   fi
 
-  die "未找到可用的 Linux 资产（repo=$repo tag=${tag:-latest} arch=$arch）。已尝试: ${tried[*]}"
+  die "No suitable Linux asset found (repo=$repo tag=${tag:-latest} arch=$arch). Tried: ${tried[*]}"
 }
 
 cmd_uninstall() {
@@ -271,7 +291,7 @@ self_path() {
     printf '%s\n' "${BASH_SOURCE[0]}"
     return 0
   fi
-  die "无法确定 codexi 安装路径（可通过 CODEXI_SELF_BIN_PATH 指定）"
+  die "Unable to determine codexi install path (set CODEXI_SELF_BIN_PATH to override)"
 }
 
 cmd_self_update() {
@@ -284,10 +304,10 @@ cmd_self_update() {
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --tag) shift; tag="${1:-}"; [[ -n "$tag" ]] || die "--tag 需要参数" ;;
-      --repo) shift; repo="${1:-}"; [[ -n "$repo" ]] || die "--repo 需要参数" ;;
+      --tag) shift; tag="${1:-}"; [[ -n "$tag" ]] || die "--tag requires a value" ;;
+      --repo) shift; repo="${1:-}"; [[ -n "$repo" ]] || die "--repo requires a value" ;;
       -h|--help) cmd_help; return 0 ;;
-      *) die "未知参数: $1" ;;
+      *) die "Unknown argument: $1" ;;
     esac
     shift
   done
@@ -308,8 +328,9 @@ cmd_self_update() {
     fi
   fi
 
-  http_get "$url" "$tmpfile" || die "self update 下载失败: $url"
-  [[ -s "$tmpfile" ]] || die "self update 下载文件为空: $url"
+  log "Downloading codexi from: $url"
+  http_get "$url" "$tmpfile" || die "self update download failed: $url"
+  [[ -s "$tmpfile" ]] || die "self update downloaded an empty file: $url"
   chmod 0755 "$tmpfile"
   mv -f "$tmpfile" "$dest"
   log "Updated codexi: $dest"
@@ -335,7 +356,7 @@ cmd_self_status() {
 
 cmd_help() {
   cat <<'H'
-codexi - codex Linux 裸安装器（bash）
+codexi - codex binary installer for Linux (bash)
 
 Usage:
   codexi install [--tag TAG] [--repo OWNER/REPO] [--bin PATH]
@@ -352,8 +373,9 @@ Env (codex):
   CODEXI_TAG           default: latest
   CODEXI_INSTALL_DIR   default: ~/.local/bin
   CODEXI_BIN_PATH      default: ~/.local/bin/codex
-  CODEXI_LIBC          default: auto  (auto|gnu|musl)
-  CODEXI_PLATFORM       override platform (e.g. unknown-linux-gnu)
+  CODEXI_LIBC          default: auto (auto|gnu|musl)
+  CODEXI_PLATFORM      override platform (e.g. unknown-linux-gnu)
+  CODEXI_NO_PROGRESS   set to 1 to disable download progress output
 
 Env (self):
   CODEXI_SELF_REPO     default: un4gt/codexi
@@ -376,7 +398,7 @@ cmd_self() {
     uninstall) cmd_self_uninstall ;;
     status) cmd_self_status ;;
     help|-h|--help|"") cmd_help ;;
-    *) die "未知 self 子命令: $sub" ;;
+    *) die "Unknown self subcommand: $sub" ;;
   esac
 }
 
@@ -390,7 +412,7 @@ main() {
     self) cmd_self "$@" ;;
     help|-h|--help) cmd_help ;;
     --version|version) cmd_version ;;
-    *) die "未知命令: $cmd（使用 --help 查看用法）" ;;
+    *) die "Unknown command: $cmd (use --help for usage)" ;;
   esac
 }
 
