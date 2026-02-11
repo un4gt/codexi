@@ -1,9 +1,10 @@
 # codexi
 
-`codexi` 是一个极简、低依赖的 Linux 安装器，用于从 GitHub Releases 下载并安装 `codex` 二进制文件。
+`codexi` 是一个极简、低依赖的安装器，用于从 GitHub Releases 下载并安装 `codex` 二进制文件（默认 Linux；Termux 通过第三方构建支持）。
 
 - 不依赖 npm/homebrew（使用 `curl` 或 `wget`）
 - 默认优先选择 **musl** 构建（并在需要时回退到 **gnu**），提升跨发行版兼容性
+- 在 Termux（Android ARM64）上会自动检测并从 `DioNanos/codex-termux` 的 Releases 安装
 - 提供 `self` 子命令用于更新/卸载 `codexi` 本身
 
 > 说明：本项目为社区维护，并非 OpenAI 官方安装方式。
@@ -48,6 +49,7 @@ codexi self update
 - `bash`、`tar`
 - `curl` 或 `wget`
 - 可选：`zstd`（仅当目标 release 只有 `.zst` 而没有 `.tar.gz` 时需要）
+- Termux 支持（Android ARM64）：会通过 GitHub API 解析 `.tgz` 资产名；可选设置 `CODEXI_GITHUB_TOKEN`（或 `GITHUB_TOKEN`）以避免 API 限流
 
 ## Linux 兼容性说明（glibc / musl）
 部分 `*-unknown-linux-gnu` 版本的二进制可能依赖更高版本的 glibc（例如 Ubuntu 22.04 会遇到 `GLIBC_2.38/2.39 not found`）。
@@ -65,10 +67,17 @@ CODEXI_LIBC=musl codexi install
 常用环境变量：
 - `CODEXI_REPO`（默认：`openai/codex`）
 - `CODEXI_TAG`（默认：latest）
-- `CODEXI_BIN_PATH`（默认：`~/.local/bin/codex`）
+- `CODEXI_INSTALL_DIR`（默认：`~/.local/bin` | Termux：`$PREFIX/bin`）
+- `CODEXI_BIN_PATH`（默认：`<install_dir>/codex`）
 - `CODEXI_LIBC`（`auto|gnu|musl`，默认：`auto`）
 - `CODEXI_PLATFORM`（覆盖完整平台字符串，例如 `unknown-linux-gnu`）
 - `CODEXI_NO_PROGRESS=1`：关闭下载进度输出
+
+Termux（自动检测）相关变量：
+- `CODEXI_TERMUX_REPO`（默认：`DioNanos/codex-termux`）
+- `CODEXI_TERMUX_CHANNEL`（默认：`termux`，可选：`termux|lts`）
+- `CODEXI_EXEC_BIN_PATH`（默认：`<install_dir>/codex-exec`）
+- `CODEXI_GITHUB_TOKEN`（可选）或 `GITHUB_TOKEN`：避免 GitHub API 限流
 
 自更新相关变量：
 - `CODEXI_SELF_REPO`（默认：`un4gt/codexi`）

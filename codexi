@@ -5,6 +5,7 @@ PROG="codexi"
 CODEXI_VERSION="dev"
 
 CODEXI_REPO_DEFAULT="openai/codex"
+CODEXI_TERMUX_REPO_DEFAULT="DioNanos/codex-termux"
 CODEXI_SELF_REPO_DEFAULT="un4gt/codexi"
 CODEXI_SELF_ASSET_DEFAULT="codexi"
 
@@ -13,10 +14,62 @@ die() { log "ERROR: $*"; exit 1; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+is_termux() {
+  [[ -n "${TERMUX_VERSION:-}" ]] && return 0
+  if [[ -n "${PREFIX:-}" && "$PREFIX" == *"/com.termux/"* ]]; then
+    return 0
+  fi
+  if have uname; then
+    [[ "$(uname -o 2>/dev/null || true)" == "Android" ]] && return 0
+  fi
+  return 1
+}
+
+default_install_dir() {
+  if is_termux && [[ -n "${PREFIX:-}" ]]; then
+    printf '%s\n' "$PREFIX/bin"
+    return 0
+  fi
+  printf '%s\n' "$HOME/.local/bin"
+}
+
 require_downloader() {
   have curl && return 0
   have wget && return 0
   die "curl or wget is required for downloads"
+}
+
+http_get_api() {
+  local url="$1"
+  local out="$2"
+  local token="${CODEXI_GITHUB_TOKEN:-${GITHUB_TOKEN:-}}"
+  rm -f "$out"
+
+  if have curl; then
+    if [[ -n "$token" ]]; then
+      curl -fsSL --retry 3 --connect-timeout 10 --max-time 60 \
+        -H "Accept: application/vnd.github+json" \
+        -H "X-GitHub-Api-Version: 2022-11-28" \
+        -H "Authorization: Bearer ${token}" \
+        -o "$out" "$url"
+      return 0
+    fi
+    curl -fsSL --retry 3 --connect-timeout 10 --max-time 60 \
+      -H "Accept: application/vnd.github+json" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      -o "$out" "$url"
+    return 0
+  fi
+
+  local wget_args=(
+    -q -O "$out" -t 3 -T 10
+    --header="Accept: application/vnd.github+json"
+    --header="X-GitHub-Api-Version: 2022-11-28"
+  )
+  if [[ -n "$token" ]]; then
+    wget_args+=(--header="Authorization: Bearer ${token}")
+  fi
+  wget "${wget_args[@]}" "$url"
 }
 
 http_get() {
@@ -92,6 +145,47 @@ detect_arch() {
   esac
 }
 
+termux_asset_regex() {
+  local channel="${1:-termux}"
+  case "$channel" in
+    termux) printf '%s\n' 'mmmbuto-codex-cli-termux-.*\.tgz$' ;;
+    lts) printf '%s\n' 'mmmbuto-codex-cli-lts-.*\.tgz$' ;;
+    *) die "Invalid CODEXI_TERMUX_CHANNEL: $channel (supported: termux|lts)" ;;
+  esac
+}
+
+extract_browser_download_urls() {
+  local json_file="$1"
+  grep -o '"browser_download_url":"[^"]*"' "$json_file" \
+    | sed 's/^"browser_download_url":"//; s/"$//'
+}
+
+resolve_termux_asset_url() {
+  local repo="$1"
+  local tag="$2"
+  local channel="$3"
+  local tmpdir="$4"
+
+  local api_url json_file regex asset_url
+  if [[ -n "$tag" ]]; then
+    api_url="https://api.github.com/repos/${repo}/releases/tags/${tag}"
+  else
+    if [[ "$channel" == "lts" ]]; then
+      api_url="https://api.github.com/repos/${repo}/releases?per_page=30"
+    else
+      api_url="https://api.github.com/repos/${repo}/releases/latest"
+    fi
+  fi
+
+  json_file="$tmpdir/termux.release.json"
+  http_get_api "$api_url" "$json_file" || die "Failed to query GitHub API: $api_url"
+
+  regex="$(termux_asset_regex "$channel")"
+  asset_url="$(extract_browser_download_urls "$json_file" | grep "$regex" | head -n 1 || true)"
+  [[ -n "$asset_url" ]] || die "No suitable Termux asset found (repo=$repo tag=${tag:-latest} channel=$channel)"
+  printf '%s\n' "$asset_url"
+}
+
 libc_guess() {
   if have ldd; then
     if ldd --version 2>&1 | grep -qi musl; then
@@ -162,15 +256,85 @@ extract_codex_from_zst() {
   tar -xf "$outdir/codex.tar" -C "$outdir"
 }
 
+extract_termux_from_tgz() {
+  local archive="$1"
+  local outdir="$2"
+  tar -xzf "$archive" -C "$outdir"
+}
+
+install_termux_binaries() {
+  ensure_linux
+  require_downloader
+  have tar || die "tar is required for extraction (please install tar)"
+
+  local repo="$1"
+  local tag="$2"
+  local bin_path="$3"
+  local exec_bin_path="$4"
+  local channel="$5"
+
+  local arch tmpdir asset_url archive
+  log "Detecting Termux platform..."
+  arch="$(detect_arch)"
+  [[ "$arch" == "aarch64" ]] || die "Termux install is supported on aarch64 only (detected: $arch)"
+
+  tmpdir="$(make_tmpdir)"
+  local cleaned=0
+  cleanup() {
+    [[ "$cleaned" == "1" ]] && return 0
+    cleaned=1
+    rm -rf "$tmpdir"
+  }
+  trap cleanup EXIT
+
+  log "Resolving Termux release asset (repo=$repo channel=$channel tag=${tag:-latest})..."
+  asset_url="$(resolve_termux_asset_url "$repo" "$tag" "$channel" "$tmpdir")"
+  log "Downloading: $asset_url"
+  archive="$tmpdir/codex-termux.tgz"
+  http_get "$asset_url" "$archive" || die "Download failed: $asset_url"
+
+  log "Extracting..."
+  extract_termux_from_tgz "$archive" "$tmpdir"
+
+  local src_codex src_exec
+  src_codex="$tmpdir/package/bin/codex"
+  src_exec="$tmpdir/package/bin/codex-exec"
+  [[ -f "$src_codex" ]] || die "Extracted archive but binary not found: package/bin/codex"
+  [[ -f "$src_exec" ]] || die "Extracted archive but binary not found: package/bin/codex-exec"
+
+  log "Installing to: $bin_path"
+  install_file_atomic "$src_codex" "$bin_path"
+  log "Installing to: $exec_bin_path"
+  install_file_atomic "$src_exec" "$exec_bin_path"
+
+  log "Installed codex to: $bin_path"
+  log "Installed codex-exec to: $exec_bin_path"
+  cleanup
+  trap - EXIT
+}
+
 cmd_install_or_update() {
   ensure_linux
   require_downloader
   have tar || die "tar is required for extraction (please install tar)"
 
-  local repo="${CODEXI_REPO:-$CODEXI_REPO_DEFAULT}"
-  local install_dir="${CODEXI_INSTALL_DIR:-$HOME/.local/bin}"
-  local bin_path="${CODEXI_BIN_PATH:-$install_dir/codex}"
-  local tag="${CODEXI_TAG:-}"
+  local is_termux_mode=0
+  if is_termux; then
+    is_termux_mode=1
+  fi
+
+  local repo
+  if [[ "$is_termux_mode" == "1" ]]; then
+    repo="${CODEXI_TERMUX_REPO:-${CODEXI_REPO:-$CODEXI_TERMUX_REPO_DEFAULT}}"
+  else
+    repo="${CODEXI_REPO:-$CODEXI_REPO_DEFAULT}"
+  fi
+
+  local default_dir install_dir bin_path tag
+  default_dir="$(default_install_dir)"
+  install_dir="${CODEXI_INSTALL_DIR:-$default_dir}"
+  bin_path="${CODEXI_BIN_PATH:-$install_dir/codex}"
+  tag="${CODEXI_TAG:-}"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -182,6 +346,18 @@ cmd_install_or_update() {
     esac
     shift
   done
+
+  if [[ "$tag" == "latest" ]]; then
+    tag=""
+  fi
+
+  if [[ "$is_termux_mode" == "1" ]]; then
+    local channel exec_bin_path
+    channel="${CODEXI_TERMUX_CHANNEL:-termux}"
+    exec_bin_path="${CODEXI_EXEC_BIN_PATH:-$(dirname "$bin_path")/codex-exec}"
+    install_termux_binaries "$repo" "$tag" "$bin_path" "$exec_bin_path" "$channel"
+    return 0
+  fi
 
   local arch base_url tmpdir platform asset tar_url zst_url
   log "Detecting platform..."
@@ -254,25 +430,41 @@ cmd_install_or_update() {
 }
 
 cmd_uninstall() {
-  local install_dir="${CODEXI_INSTALL_DIR:-$HOME/.local/bin}"
+  local install_dir="${CODEXI_INSTALL_DIR:-$(default_install_dir)}"
   local bin_path="${CODEXI_BIN_PATH:-$install_dir/codex}"
+  local exec_bin_path="${CODEXI_EXEC_BIN_PATH:-$(dirname "$bin_path")/codex-exec}"
   if [[ -e "$bin_path" ]]; then
     rm -f "$bin_path"
     log "Removed: $bin_path"
   else
     log "Nothing to uninstall (not found): $bin_path"
   fi
+  if is_termux && [[ -e "$exec_bin_path" ]]; then
+    rm -f "$exec_bin_path"
+    log "Removed: $exec_bin_path"
+  fi
 }
 
 cmd_status() {
-  local install_dir="${CODEXI_INSTALL_DIR:-$HOME/.local/bin}"
+  local install_dir="${CODEXI_INSTALL_DIR:-$(default_install_dir)}"
   local bin_path="${CODEXI_BIN_PATH:-$install_dir/codex}"
+  local exec_bin_path="${CODEXI_EXEC_BIN_PATH:-$(dirname "$bin_path")/codex-exec}"
   printf 'codex: %s\n' "$bin_path"
+  if is_termux; then
+    printf 'codex-exec: %s\n' "$exec_bin_path"
+  fi
   if [[ -x "$bin_path" ]]; then
     printf 'status: installed\n'
     printf 'version: %s\n' "$("$bin_path" --version 2>/dev/null || echo "unknown")"
   else
     printf 'status: not installed\n'
+  fi
+  if is_termux; then
+    if [[ -x "$exec_bin_path" ]]; then
+      printf 'exec: installed\n'
+    else
+      printf 'exec: not installed\n'
+    fi
   fi
 }
 
@@ -311,6 +503,10 @@ cmd_self_update() {
     esac
     shift
   done
+
+  if [[ "$tag" == "latest" ]]; then
+    tag=""
+  fi
 
   local dest url tmpdir tmpfile
   dest="$(self_path)"
@@ -371,11 +567,17 @@ Usage:
 Env (codex):
   CODEXI_REPO          default: openai/codex
   CODEXI_TAG           default: latest
-  CODEXI_INSTALL_DIR   default: ~/.local/bin
-  CODEXI_BIN_PATH      default: ~/.local/bin/codex
+  CODEXI_INSTALL_DIR   default: ~/.local/bin (Termux: $PREFIX/bin)
+  CODEXI_BIN_PATH      default: <install_dir>/codex
   CODEXI_LIBC          default: auto (auto=prefer musl, fallback gnu; or set gnu|musl)
   CODEXI_PLATFORM      override platform (e.g. unknown-linux-gnu)
   CODEXI_NO_PROGRESS   set to 1 to disable download progress output
+
+Env (termux auto-detect):
+  CODEXI_TERMUX_REPO     default: DioNanos/codex-termux
+  CODEXI_TERMUX_CHANNEL  default: termux (termux|lts)
+  CODEXI_EXEC_BIN_PATH   default: <install_dir>/codex-exec (Termux only)
+  CODEXI_GITHUB_TOKEN    optional GitHub token (or set GITHUB_TOKEN) to avoid API rate limits
 
 Env (self):
   CODEXI_SELF_REPO     default: un4gt/codexi

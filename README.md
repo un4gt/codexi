@@ -1,9 +1,10 @@
 # codexi
 
-Minimal, dependency-light installer for the `codex` Linux binaries published on GitHub Releases.
+Minimal, dependency-light installer for `codex` binaries published on GitHub Releases (Linux by default; Termux via third-party builds).
 
 - Installs `codex` without npm/homebrew (uses `curl` or `wget`)
 - Works across common Linux distros by defaulting to the **musl** build (with **gnu** fallback)
+- On Termux (Android ARM64), auto-detects and installs from `DioNanos/codex-termux` Releases
 - Includes `self` commands to update/uninstall `codexi` itself
 
 > Note: This project is community-maintained and is not an official OpenAI installer.
@@ -48,6 +49,7 @@ codexi self update
 - `bash`, `tar`
 - `curl` or `wget`
 - Optional: `zstd` (only needed if a release is available as `.zst` but not `.tar.gz`)
+- Termux support (Android ARM64): uses GitHub API to resolve the `.tgz` asset name; optionally set `CODEXI_GITHUB_TOKEN` (or `GITHUB_TOKEN`) to avoid API rate limits
 
 ## How Linux Compatibility Works
 Some `*-unknown-linux-gnu` binaries require newer glibc than older distributions provide (e.g. Ubuntu 22.04).
@@ -65,10 +67,17 @@ CODEXI_LIBC=musl codexi install
 Common environment variables:
 - `CODEXI_REPO` (default: `openai/codex`)
 - `CODEXI_TAG` (default: latest)
-- `CODEXI_BIN_PATH` (default: `~/.local/bin/codex`)
+- `CODEXI_INSTALL_DIR` (default: `~/.local/bin` | Termux: `$PREFIX/bin`)
+- `CODEXI_BIN_PATH` (default: `<install_dir>/codex`)
 - `CODEXI_LIBC` (`auto|gnu|musl`, default: `auto`)
 - `CODEXI_PLATFORM` (override full platform string, e.g. `unknown-linux-gnu`)
 - `CODEXI_NO_PROGRESS=1` to disable download progress output
+
+Termux variables (auto-detect):
+- `CODEXI_TERMUX_REPO` (default: `DioNanos/codex-termux`)
+- `CODEXI_TERMUX_CHANNEL` (default: `termux`, supported: `termux|lts`)
+- `CODEXI_EXEC_BIN_PATH` (default: `<install_dir>/codex-exec`)
+- `CODEXI_GITHUB_TOKEN` (optional) or `GITHUB_TOKEN` to avoid API rate limits
 
 Self-update variables:
 - `CODEXI_SELF_REPO` (default: `un4gt/codexi`)
