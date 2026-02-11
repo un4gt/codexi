@@ -19,6 +19,13 @@ curl -fsSL https://github.com/un4gt/codexi/releases/latest/download/codexi -o ~/
 chmod +x ~/.local/bin/codexi
 ```
 
+在 Termux 上，建议直接安装到 `$PREFIX/bin`（默认在 `PATH` 中）：
+
+```bash
+curl -fsSL https://github.com/un4gt/codexi/releases/latest/download/codexi -o "$PREFIX/bin/codexi"
+chmod +x "$PREFIX/bin/codexi"
+```
+
 安装 `codex`：
 
 ```bash
@@ -50,6 +57,7 @@ codexi self update
 - `curl` 或 `wget`
 - 可选：`zstd`（仅当目标 release 只有 `.zst` 而没有 `.tar.gz` 时需要）
 - Termux 支持（Android ARM64）：会通过 GitHub API 解析 `.tgz` 资产名；可选设置 `CODEXI_GITHUB_TOKEN`（或 `GITHUB_TOKEN`）以避免 API 限流
+  - 需要 64 位 Android 用户态（存在 `/system/bin/linker64`）。如果 `uname -m` 输出为 `armv8l`，通常意味着系统为 32 位，Termux 的 codex 二进制无法运行。
 
 ## Linux 兼容性说明（glibc / musl）
 部分 `*-unknown-linux-gnu` 版本的二进制可能依赖更高版本的 glibc（例如 Ubuntu 22.04 会遇到 `GLIBC_2.38/2.39 not found`）。
@@ -87,6 +95,7 @@ Termux（自动检测）相关变量：
 ## 常见问题
 - 提示 `GLIBC_2.xx not found`：执行 `CODEXI_LIBC=musl codexi update`（或先更新到最新版 `codexi` 再重试）。
 - 提示 `Found a .zst asset but zstd is not installed`：安装 `zstd`（或选择存在 `.tar.gz` 的平台）。
+- Termux 提示 `Unsupported CPU architecture: armv8l`：你的 Android 可能是 32 位构建（没有 `/system/bin/linker64`），而 `DioNanos/codex-termux` 仅提供 ARM64 二进制。
 
 ## 发布说明（维护者）
 推送类似 `v0.1.2` 的 tag 会触发 GitHub Actions 自动创建 Release 并上传 `codexi` 资产。

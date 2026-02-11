@@ -145,6 +145,34 @@ detect_arch() {
   esac
 }
 
+detect_termux_arch() {
+  local machine dpkg_arch
+  machine="$(uname -m 2>/dev/null || true)"
+  case "$machine" in
+    aarch64|arm64) echo "aarch64"; return 0 ;;
+  esac
+
+  dpkg_arch=""
+  if have dpkg; then
+    dpkg_arch="$(dpkg --print-architecture 2>/dev/null || true)"
+    case "$dpkg_arch" in
+      aarch64) echo "aarch64"; return 0 ;;
+    esac
+  fi
+
+  # Some Android devices report armv8l even when a 64-bit userspace is present.
+  # If linker64 exists, try the ARM64 Termux binary.
+  if [[ -x "/system/bin/linker64" ]]; then
+    echo "aarch64"
+    return 0
+  fi
+
+  if [[ -n "$dpkg_arch" ]]; then
+    die "Unsupported Termux architecture: ${machine:-unknown} (dpkg: $dpkg_arch). codex-termux provides ARM64 binaries only; a 64-bit Android userspace (/system/bin/linker64) is required."
+  fi
+  die "Unsupported Termux architecture: ${machine:-unknown}. codex-termux provides ARM64 binaries only; a 64-bit Android userspace (/system/bin/linker64) is required."
+}
+
 termux_asset_regex() {
   local channel="${1:-termux}"
   case "$channel" in
@@ -275,8 +303,8 @@ install_termux_binaries() {
 
   local arch tmpdir asset_url archive
   log "Detecting Termux platform..."
-  arch="$(detect_arch)"
-  [[ "$arch" == "aarch64" ]] || die "Termux install is supported on aarch64 only (detected: $arch)"
+  arch="$(detect_termux_arch)"
+  log "Arch: $arch"
 
   tmpdir="$(make_tmpdir)"
   local cleaned=0

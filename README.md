@@ -19,6 +19,13 @@ curl -fsSL https://github.com/un4gt/codexi/releases/latest/download/codexi -o ~/
 chmod +x ~/.local/bin/codexi
 ```
 
+On Termux, prefer installing to `$PREFIX/bin` (already on `PATH`):
+
+```bash
+curl -fsSL https://github.com/un4gt/codexi/releases/latest/download/codexi -o "$PREFIX/bin/codexi"
+chmod +x "$PREFIX/bin/codexi"
+```
+
 Install `codex`:
 
 ```bash
@@ -50,6 +57,7 @@ codexi self update
 - `curl` or `wget`
 - Optional: `zstd` (only needed if a release is available as `.zst` but not `.tar.gz`)
 - Termux support (Android ARM64): uses GitHub API to resolve the `.tgz` asset name; optionally set `CODEXI_GITHUB_TOKEN` (or `GITHUB_TOKEN`) to avoid API rate limits
+  - Requires 64-bit Android userspace (`/system/bin/linker64`). If `uname -m` prints `armv8l`, you're likely on a 32-bit Android build and Termux codex binaries won't run.
 
 ## How Linux Compatibility Works
 Some `*-unknown-linux-gnu` binaries require newer glibc than older distributions provide (e.g. Ubuntu 22.04).
@@ -87,6 +95,7 @@ Self-update variables:
 ## Troubleshooting
 - `GLIBC_2.xx not found`: run `CODEXI_LIBC=musl codexi update` (or upgrade to latest `codexi` and retry).
 - `Found a .zst asset but zstd is not installed`: install `zstd` (or choose a `.tar.gz`-available platform).
+- `Unsupported CPU architecture: armv8l` (Termux): your Android build is likely 32-bit (no `/system/bin/linker64`). `DioNanos/codex-termux` provides ARM64 binaries only.
 
 ## Release Process (Maintainers)
 Pushing a tag like `v0.1.2` triggers GitHub Actions to create a Release and upload the `codexi` asset.
