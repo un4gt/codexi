@@ -96,6 +96,7 @@ Self-update variables:
 - `GLIBC_2.xx not found`: run `CODEXI_LIBC=musl codexi update` (or upgrade to latest `codexi` and retry).
 - `Found a .zst asset but zstd is not installed`: install `zstd` (or choose a `.tar.gz`-available platform).
 - `Unsupported CPU architecture: armv8l` (Termux): your Android build is likely 32-bit (no `/system/bin/linker64`). `DioNanos/codex-termux` provides ARM64 binaries only.
+- `No suitable Termux asset found`: GitHub API response didn't contain the expected `.tgz` asset. Try setting `CODEXI_GITHUB_TOKEN` (or `GITHUB_TOKEN`), pin a version with `CODEXI_TAG=vX.Y.Z-termux`, or check `DioNanos/codex-termux` Releases for changes.
 
 ## Release Process (Maintainers)
 Pushing a tag like `v0.1.2` triggers GitHub Actions to create a Release and upload the `codexi` asset.

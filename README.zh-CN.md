@@ -96,6 +96,7 @@ Termux（自动检测）相关变量：
 - 提示 `GLIBC_2.xx not found`：执行 `CODEXI_LIBC=musl codexi update`（或先更新到最新版 `codexi` 再重试）。
 - 提示 `Found a .zst asset but zstd is not installed`：安装 `zstd`（或选择存在 `.tar.gz` 的平台）。
 - Termux 提示 `Unsupported CPU architecture: armv8l`：你的 Android 可能是 32 位构建（没有 `/system/bin/linker64`），而 `DioNanos/codex-termux` 仅提供 ARM64 二进制。
+- Termux 提示 `No suitable Termux asset found`：GitHub API 返回中没有匹配到预期的 `.tgz` 资产。可以尝试设置 `CODEXI_GITHUB_TOKEN`（或 `GITHUB_TOKEN`）、用 `CODEXI_TAG=vX.Y.Z-termux` 固定版本，或检查 `DioNanos/codex-termux` 的 Releases 是否调整了资产命名/结构。
 
 ## 发布说明（维护者）
 推送类似 `v0.1.2` 的 tag 会触发 GitHub Actions 自动创建 Release 并上传 `codexi` 资产。

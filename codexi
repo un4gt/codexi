@@ -184,8 +184,8 @@ termux_asset_regex() {
 
 extract_browser_download_urls() {
   local json_file="$1"
-  grep -o '"browser_download_url":"[^"]*"' "$json_file" \
-    | sed 's/^"browser_download_url":"//; s/"$//'
+  # GitHub API JSON may be pretty-printed (spaces/newlines) or compact.
+  sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$json_file"
 }
 
 resolve_termux_asset_url() {
@@ -307,13 +307,8 @@ install_termux_binaries() {
   log "Arch: $arch"
 
   tmpdir="$(make_tmpdir)"
-  local cleaned=0
-  cleanup() {
-    [[ "$cleaned" == "1" ]] && return 0
-    cleaned=1
-    rm -rf "$tmpdir"
-  }
-  trap cleanup EXIT
+  # Expand tmpdir now so the EXIT trap doesn't depend on local scope.
+  trap "rm -rf -- $(printf '%q' "$tmpdir")" EXIT
 
   log "Resolving Termux release asset (repo=$repo channel=$channel tag=${tag:-latest})..."
   asset_url="$(resolve_termux_asset_url "$repo" "$tag" "$channel" "$tmpdir")"
@@ -337,7 +332,7 @@ install_termux_binaries() {
 
   log "Installed codex to: $bin_path"
   log "Installed codex-exec to: $exec_bin_path"
-  cleanup
+  rm -rf "$tmpdir"
   trap - EXIT
 }
 
@@ -394,13 +389,8 @@ cmd_install_or_update() {
   base_url="$(release_base_url "$repo" "$tag")"
   tmpdir="$(make_tmpdir)"
 
-  local cleaned=0
-  cleanup() {
-    [[ "$cleaned" == "1" ]] && return 0
-    cleaned=1
-    rm -rf "$tmpdir"
-  }
-  trap cleanup EXIT
+  # Expand tmpdir now so the EXIT trap doesn't depend on local scope.
+  trap "rm -rf -- $(printf '%q' "$tmpdir")" EXIT
 
   local zst_found_without_zstd=0
   local tried=()
@@ -421,7 +411,7 @@ cmd_install_or_update() {
       log "Installing to: $bin_path"
       install_file_atomic "$tmpdir/$asset" "$bin_path"
       log "Installed codex to: $bin_path"
-      cleanup
+      rm -rf "$tmpdir"
       trap - EXIT
       return 0
     fi
@@ -438,7 +428,7 @@ cmd_install_or_update() {
         log "Installing to: $bin_path"
         install_file_atomic "$tmpdir/$asset" "$bin_path"
         log "Installed codex to: $bin_path"
-        cleanup
+        rm -rf "$tmpdir"
         trap - EXIT
         return 0
       fi
