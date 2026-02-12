@@ -19,6 +19,20 @@ curl -fsSL https://github.com/un4gt/codexi/releases/latest/download/codexi -o ~/
 chmod +x ~/.local/bin/codexi
 ```
 
+如果出现 `codexi: command not found`，通常是因为当前 shell 的 `PATH` 没包含 `~/.local/bin`（`root` 环境下更常见）。你可以：
+
+```bash
+# 直接用绝对路径运行
+~/.local/bin/codexi --help
+
+# 或加入 PATH（bash）
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+. ~/.bashrc
+
+# 或安装到系统路径（全局可用）
+sudo install -m 0755 ~/.local/bin/codexi /usr/local/bin/codexi
+```
+
 在 Termux 上，建议直接安装到 `$PREFIX/bin`（默认在 `PATH` 中）：
 
 ```bash
