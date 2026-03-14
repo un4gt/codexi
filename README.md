@@ -101,6 +101,7 @@ Common environment variables:
 - `CODEXI_LIBC` (`auto|gnu|musl`, default: `auto`)
 - `CODEXI_PLATFORM` (override full platform string, e.g. `unknown-linux-gnu`)
 - `CODEXI_NO_PROGRESS=1` to disable download progress output
+- `CODEXI_YES=1` to auto-confirm interactive prompts (e.g. `codexi update`)
 
 Termux variables (auto-detect):
 - `CODEXI_TERMUX_REPO` (default: `DioNanos/codex-termux`)

@@ -101,6 +101,7 @@ CODEXI_LIBC=musl codexi install
 - `CODEXI_LIBC`（`auto|gnu|musl`，默认：`auto`）
 - `CODEXI_PLATFORM`（覆盖完整平台字符串，例如 `unknown-linux-gnu`）
 - `CODEXI_NO_PROGRESS=1`：关闭下载进度输出
+- `CODEXI_YES=1`：自动确认交互提示（例如 `codexi update`）
 
 Termux（自动检测）相关变量：
 - `CODEXI_TERMUX_REPO`（默认：`DioNanos/codex-termux`）

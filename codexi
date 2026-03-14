@@ -188,6 +188,119 @@ extract_browser_download_urls() {
   sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$json_file"
 }
 
+extract_json_string_field() {
+  local field="$1"
+  local json_file="$2"
+  # GitHub API JSON may be pretty-printed (spaces/newlines) or compact.
+  sed -n "s/.*\"${field}\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" "$json_file"
+}
+
+is_prerelease_tag() {
+  local tag="$1"
+  local t
+  t="$(printf '%s' "$tag" | tr '[:upper:]' '[:lower:]')"
+  case "$t" in
+    *alpha*|*beta*|*rc*) return 0 ;;
+  esac
+  return 1
+}
+
+format_release_tag_as_version() {
+  local tag="$1"
+  local v=""
+  # Typical tags include: rust-v0.114.0, v0.114.0, codex-cli-v0.114.0, etc.
+  if [[ "$tag" =~ ([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+    v="${BASH_REMATCH[1]}"
+    printf 'codex-cli %s\n' "$v"
+    return 0
+  fi
+  printf '%s\n' "$tag"
+}
+
+try_resolve_latest_stable_release_tag() {
+  local repo="$1"
+  local tmpdir json_file api_url tag
+
+  (have curl || have wget) || return 1
+
+  tmpdir="$(make_tmpdir)"
+  json_file="$tmpdir/release.latest.json"
+  api_url="https://api.github.com/repos/${repo}/releases/latest"
+  if ! http_get_api "$api_url" "$json_file" >/dev/null 2>&1; then
+    rm -rf "$tmpdir"
+    return 1
+  fi
+
+  tag="$(extract_json_string_field "tag_name" "$json_file" | head -n 1 || true)"
+  rm -rf "$tmpdir"
+
+  [[ -n "$tag" ]] || return 1
+  is_prerelease_tag "$tag" && return 1
+  printf '%s\n' "$tag"
+}
+
+try_resolve_latest_termux_release_tag() {
+  local repo="$1"
+  local channel="$2"
+  local tmpdir json_file api_url regex asset_url tag
+
+  (have curl || have wget) || return 1
+
+  tmpdir="$(make_tmpdir)"
+  json_file="$tmpdir/termux.release.json"
+
+  if [[ "$channel" == "lts" ]]; then
+    api_url="https://api.github.com/repos/${repo}/releases?per_page=30"
+  else
+    api_url="https://api.github.com/repos/${repo}/releases/latest"
+  fi
+
+  if ! http_get_api "$api_url" "$json_file" >/dev/null 2>&1; then
+    rm -rf "$tmpdir"
+    return 1
+  fi
+
+  regex="$(termux_asset_regex "$channel")"
+  asset_url="$(extract_browser_download_urls "$json_file" | grep "$regex" | head -n 1 || true)"
+  rm -rf "$tmpdir"
+  [[ -n "$asset_url" ]] || return 1
+
+  # Asset URLs are of the form:
+  # https://github.com/<repo>/releases/download/<tag>/<asset>
+  tag="$(printf '%s\n' "$asset_url" | sed -n 's#.*\/download\/\([^/]*\)\/.*#\1#p' | head -n 1 || true)"
+  [[ -n "$tag" ]] || return 1
+  is_prerelease_tag "$tag" && return 1
+  printf '%s\n' "$tag"
+}
+
+extract_semver() {
+  local s="$1"
+  if [[ "$s" =~ ([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  return 1
+}
+
+confirm_yes_no() {
+  local prompt="$1"
+  local reply=""
+
+  if [[ "${CODEXI_YES:-0}" == "1" ]]; then
+    return 0
+  fi
+
+  if [[ ! -t 0 ]]; then
+    log "Non-interactive shell; set CODEXI_YES=1 to confirm update"
+    return 1
+  fi
+
+  printf '%s [yes/no]: ' "$prompt" >&2
+  read -r reply || true
+  reply="$(printf '%s' "$reply" | tr '[:upper:]' '[:lower:]')"
+  [[ "$reply" == "yes" || "$reply" == "y" ]]
+}
+
 resolve_termux_asset_url() {
   local repo="$1"
   local tag="$2"
@@ -337,6 +450,9 @@ install_termux_binaries() {
 }
 
 cmd_install_or_update() {
+  local action="${1:-install}"
+  shift || true
+
   ensure_linux
   require_downloader
   have tar || die "tar is required for extraction (please install tar)"
@@ -372,6 +488,47 @@ cmd_install_or_update() {
 
   if [[ "$tag" == "latest" ]]; then
     tag=""
+  fi
+
+  if [[ "$action" == "update" && -z "$tag" ]]; then
+    local local_version local_semver remote_tag remote_semver remote_version channel
+    local_version=""
+    if [[ -x "$bin_path" ]]; then
+      local_version="$("$bin_path" --version 2>/dev/null || true)"
+    fi
+    local_semver="$(extract_semver "$local_version" 2>/dev/null || true)"
+
+    remote_tag=""
+    if [[ "$is_termux_mode" == "1" ]]; then
+      channel="${CODEXI_TERMUX_CHANNEL:-termux}"
+      remote_tag="$(try_resolve_latest_termux_release_tag "$repo" "$channel" 2>/dev/null || true)"
+    else
+      remote_tag="$(try_resolve_latest_stable_release_tag "$repo" 2>/dev/null || true)"
+    fi
+    remote_semver="$(extract_semver "$remote_tag" 2>/dev/null || true)"
+
+    if [[ -n "$local_semver" && -n "$remote_semver" && "$local_semver" == "$remote_semver" ]]; then
+      log "Already up to date: codex-cli $local_semver"
+      return 0
+    fi
+
+    if [[ -n "$remote_tag" ]]; then
+      remote_version="$(format_release_tag_as_version "$remote_tag")"
+    else
+      remote_version="unknown"
+    fi
+
+    if [[ -n "$local_version" ]]; then
+      log "Local version: $local_version"
+    else
+      log "Local version: not installed"
+    fi
+    log "Remote version: $remote_version (latest)"
+
+    if ! confirm_yes_no "Proceed with update?"; then
+      log "Update cancelled"
+      return 0
+    fi
   fi
 
   if [[ "$is_termux_mode" == "1" ]]; then
@@ -473,10 +630,28 @@ cmd_status() {
   fi
   if [[ -x "$bin_path" ]]; then
     printf 'status: installed\n'
-    printf 'version: %s\n' "$("$bin_path" --version 2>/dev/null || echo "unknown")"
+    printf 'local version: %s\n' "$("$bin_path" --version 2>/dev/null || echo "unknown")"
   else
     printf 'status: not installed\n'
+    printf 'local version: not installed\n'
   fi
+
+  local repo remote_tag remote_version channel
+  if is_termux; then
+    repo="${CODEXI_TERMUX_REPO:-${CODEXI_REPO:-$CODEXI_TERMUX_REPO_DEFAULT}}"
+    channel="${CODEXI_TERMUX_CHANNEL:-termux}"
+    remote_tag="$(try_resolve_latest_termux_release_tag "$repo" "$channel" || true)"
+  else
+    repo="${CODEXI_REPO:-$CODEXI_REPO_DEFAULT}"
+    remote_tag="$(try_resolve_latest_stable_release_tag "$repo" || true)"
+  fi
+  if [[ -n "$remote_tag" ]]; then
+    remote_version="$(format_release_tag_as_version "$remote_tag")"
+    printf 'remote version: %s (latest)\n' "$remote_version"
+  else
+    printf 'remote version: unknown (latest)\n'
+  fi
+
   if is_termux; then
     if [[ -x "$exec_bin_path" ]]; then
       printf 'exec: installed\n'
@@ -590,6 +765,7 @@ Env (codex):
   CODEXI_LIBC          default: auto (auto=prefer musl, fallback gnu; or set gnu|musl)
   CODEXI_PLATFORM      override platform (e.g. unknown-linux-gnu)
   CODEXI_NO_PROGRESS   set to 1 to disable download progress output
+  CODEXI_YES           set to 1 to auto-confirm interactive prompts (e.g. codexi update)
 
 Env (termux auto-detect):
   CODEXI_TERMUX_REPO     default: DioNanos/codex-termux
@@ -626,7 +802,8 @@ main() {
   local cmd="${1:-help}"
   shift || true
   case "$cmd" in
-    install|update) cmd_install_or_update "$@" ;;
+    install) cmd_install_or_update install "$@" ;;
+    update) cmd_install_or_update update "$@" ;;
     uninstall) cmd_uninstall ;;
     status) cmd_status ;;
     self) cmd_self "$@" ;;
