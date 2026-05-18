@@ -76,6 +76,7 @@ codexi self update
 - Linux
 - `bash`、`tar`
 - `curl` 或 `wget`
+- 推荐：`bubblewrap` / `bwrap`，用于 Codex 沙箱（`codexi install|update` 会在缺失时询问是否安装）
 - 可选：`zstd`（仅当目标 release 只有 `.zst` 而没有 `.tar.gz` 时需要）
 - Termux 支持（Android ARM64）：会通过 GitHub API 解析 `.tgz` 资产名；可选设置 `CODEXI_GITHUB_TOKEN`（或 `GITHUB_TOKEN`）以避免 API 限流
   - 需要 64 位 Android 用户态（存在 `/system/bin/linker64`）。部分设备即使是 64 位用户态也可能显示 `uname -m=armv8l`；若系统缺少 `linker64`，通常意味着系统为 32 位，Termux 的 codex 二进制无法运行。
@@ -100,6 +101,7 @@ CODEXI_LIBC=musl codexi install
 - `CODEXI_BIN_PATH`（默认：`<install_dir>/codex`）
 - `CODEXI_LIBC`（`auto|gnu|musl`，默认：`auto`）
 - `CODEXI_PLATFORM`（覆盖完整平台字符串，例如 `unknown-linux-gnu`）
+- `CODEXI_BUBBLEWRAP`（`prompt|install|skip`，默认：`prompt`）
 - `CODEXI_NO_PROGRESS=1`：关闭下载进度输出
 - `CODEXI_YES=1`：自动确认交互提示（例如 `codexi update`）
 

@@ -76,6 +76,7 @@ codexi self update
 - Linux
 - `bash`, `tar`
 - `curl` or `wget`
+- Recommended: `bubblewrap` / `bwrap` for Codex sandboxing (`codexi install|update` can prompt to install it)
 - Optional: `zstd` (only needed if a release is available as `.zst` but not `.tar.gz`)
 - Termux support (Android ARM64): uses GitHub API to resolve the `.tgz` asset name; optionally set `CODEXI_GITHUB_TOKEN` (or `GITHUB_TOKEN`) to avoid API rate limits
   - Requires 64-bit Android userspace (`/system/bin/linker64`). Some devices report `uname -m=armv8l` even on 64-bit userspace; if `linker64` is missing, you're on a 32-bit Android build and Termux codex binaries won't run.
@@ -100,6 +101,7 @@ Common environment variables:
 - `CODEXI_BIN_PATH` (default: `<install_dir>/codex`)
 - `CODEXI_LIBC` (`auto|gnu|musl`, default: `auto`)
 - `CODEXI_PLATFORM` (override full platform string, e.g. `unknown-linux-gnu`)
+- `CODEXI_BUBBLEWRAP` (`prompt|install|skip`, default: `prompt`)
 - `CODEXI_NO_PROGRESS=1` to disable download progress output
 - `CODEXI_YES=1` to auto-confirm interactive prompts (e.g. `codexi update`)
 

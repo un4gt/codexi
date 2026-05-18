@@ -291,7 +291,7 @@ confirm_yes_no() {
   fi
 
   if [[ ! -t 0 ]]; then
-    log "Non-interactive shell; set CODEXI_YES=1 to confirm update"
+    log "Non-interactive shell; set CODEXI_YES=1 to confirm prompts"
     return 1
   fi
 
@@ -299,6 +299,143 @@ confirm_yes_no() {
   read -r reply || true
   reply="$(printf '%s' "$reply" | tr '[:upper:]' '[:lower:]')"
   [[ "$reply" == "yes" || "$reply" == "y" ]]
+}
+
+bubblewrap_path() {
+  command -v bwrap 2>/dev/null || true
+}
+
+run_privileged() {
+  if [[ "$(id -u 2>/dev/null || echo 1)" == "0" ]]; then
+    "$@"
+    return $?
+  fi
+
+  if have sudo; then
+    sudo "$@"
+    return $?
+  fi
+
+  if have doas; then
+    doas "$@"
+    return $?
+  fi
+
+  log "Root privileges are required, but sudo/doas was not found"
+  return 1
+}
+
+install_bubblewrap_package() {
+  if have apt-get; then
+    log "Installing bubblewrap with apt-get..."
+    run_privileged env DEBIAN_FRONTEND=noninteractive apt-get install -y bubblewrap
+    return $?
+  fi
+
+  if have dnf; then
+    log "Installing bubblewrap with dnf..."
+    run_privileged dnf install -y bubblewrap
+    return $?
+  fi
+
+  if have yum; then
+    log "Installing bubblewrap with yum..."
+    run_privileged yum install -y bubblewrap
+    return $?
+  fi
+
+  if have pacman; then
+    log "Installing bubblewrap with pacman..."
+    run_privileged pacman -S --needed --noconfirm bubblewrap
+    return $?
+  fi
+
+  if have zypper; then
+    log "Installing bubblewrap with zypper..."
+    run_privileged zypper --non-interactive install bubblewrap
+    return $?
+  fi
+
+  if have apk; then
+    log "Installing bubblewrap with apk..."
+    run_privileged apk add --no-cache bubblewrap
+    return $?
+  fi
+
+  if have xbps-install; then
+    log "Installing bubblewrap with xbps-install..."
+    run_privileged xbps-install -Sy bubblewrap
+    return $?
+  fi
+
+  if have eopkg; then
+    log "Installing bubblewrap with eopkg..."
+    run_privileged eopkg install -y bubblewrap
+    return $?
+  fi
+
+  if have brew; then
+    log "Installing bubblewrap with brew..."
+    brew install bubblewrap
+    return $?
+  fi
+
+  log "No supported package manager found for automatic bubblewrap installation"
+  return 1
+}
+
+confirm_bubblewrap_install() {
+  local mode="${CODEXI_BUBBLEWRAP:-prompt}"
+  local reply=""
+
+  mode="$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')"
+  case "$mode" in
+    install|yes|y|true|1) return 0 ;;
+    skip|no|n|false|0) return 1 ;;
+    prompt|"") ;;
+    *) die "Invalid CODEXI_BUBBLEWRAP: $CODEXI_BUBBLEWRAP (supported: prompt|install|skip)" ;;
+  esac
+
+  if [[ ! -t 0 ]]; then
+    log "Non-interactive shell; set CODEXI_BUBBLEWRAP=install to install bubblewrap automatically"
+    return 1
+  fi
+
+  printf 'Codex recommends bubblewrap (bwrap) for sandboxing. Install bubblewrap now? [yes/no]: ' >&2
+  read -r reply || true
+  reply="$(printf '%s' "$reply" | tr '[:upper:]' '[:lower:]')"
+  [[ "$reply" == "yes" || "$reply" == "y" ]]
+}
+
+maybe_install_bubblewrap() {
+  local action="$1"
+  local bwrap=""
+
+  bwrap="$(bubblewrap_path)"
+  if [[ -n "$bwrap" ]]; then
+    log "bubblewrap: available ($bwrap)"
+    return 0
+  fi
+
+  log "bubblewrap (bwrap) is not installed; Codex recommends it for sandboxing"
+  if ! confirm_bubblewrap_install; then
+    log "Skipped bubblewrap installation"
+    log "You can install it later with your distro package manager (package: bubblewrap)"
+    return 0
+  fi
+
+  if install_bubblewrap_package; then
+    bwrap="$(bubblewrap_path)"
+    if [[ -n "$bwrap" ]]; then
+      log "Installed bubblewrap: $bwrap"
+    else
+      log "bubblewrap install command completed, but bwrap is not on PATH"
+    fi
+    return 0
+  fi
+
+  log "bubblewrap installation failed during codex $action"
+  log "Install it manually from your distro package manager or https://github.com/containers/bubblewrap"
 }
 
 resolve_termux_asset_url() {
@@ -509,6 +646,9 @@ cmd_install_or_update() {
 
     if [[ -n "$local_semver" && -n "$remote_semver" && "$local_semver" == "$remote_semver" ]]; then
       log "Already up to date: codex-cli $local_semver"
+      if [[ "$is_termux_mode" != "1" ]]; then
+        maybe_install_bubblewrap "$action"
+      fi
       return 0
     fi
 
@@ -538,6 +678,8 @@ cmd_install_or_update() {
     install_termux_binaries "$repo" "$tag" "$bin_path" "$exec_bin_path" "$channel"
     return 0
   fi
+
+  maybe_install_bubblewrap "$action"
 
   local arch base_url tmpdir platform asset tar_url zst_url
   log "Detecting platform..."
@@ -764,6 +906,7 @@ Env (codex):
   CODEXI_BIN_PATH      default: <install_dir>/codex
   CODEXI_LIBC          default: auto (auto=prefer musl, fallback gnu; or set gnu|musl)
   CODEXI_PLATFORM      override platform (e.g. unknown-linux-gnu)
+  CODEXI_BUBBLEWRAP   prompt|install|skip (default: prompt)
   CODEXI_NO_PROGRESS   set to 1 to disable download progress output
   CODEXI_YES           set to 1 to auto-confirm interactive prompts (e.g. codexi update)
 
