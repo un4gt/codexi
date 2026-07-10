@@ -131,175 +131,28 @@ install_file_atomic() {
   mv -f "$tmp" "$dest"
 }
 
-codex_package_dir() {
+code_mode_host_path() {
   local bin_path="$1"
-  if [[ -n "${CODEXI_PACKAGE_DIR:-}" ]]; then
-    printf '%s\n' "$CODEXI_PACKAGE_DIR"
-    return 0
-  fi
-  printf '%s/.codexi/codex\n' "$(dirname "$bin_path")"
+  printf '%s/codex-code-mode-host\n' "$(dirname "$bin_path")"
 }
 
-legacy_install_marker() {
+remove_obsolete_package_layout() {
   local bin_path="$1"
-  printf '%s/.%s.codexi-legacy\n' "$(dirname "$bin_path")" "$(basename "$bin_path")"
-}
+  local package_dir package_parent
 
-is_codexi_managed_dir() {
-  local package_dir="$1"
-  [[ -f "$package_dir/.codexi-managed" ]]
-}
-
-is_managed_codex_package() {
-  local package_dir="$1"
-  is_codexi_managed_dir "$package_dir" || return 1
-  [[ -f "$package_dir/codex-package.json" ]] || return 1
-  [[ -x "$package_dir/bin/codex" ]] || return 1
-}
-
-codex_package_complete() {
-  local package_dir="$1"
-  is_managed_codex_package "$package_dir" || return 1
-  [[ -x "$package_dir/bin/codex-code-mode-host" ]] || return 1
-  [[ -x "$package_dir/codex-path/rg" ]] || return 1
+  package_parent="$(dirname "$bin_path")/.codexi"
+  package_dir="$package_parent/codex"
+  [[ -f "$package_dir/.codexi-managed" ]] || return 0
+  rm -rf "$package_dir"
+  rmdir "$package_parent" 2>/dev/null || true
+  log "Removed obsolete package directory: $package_dir"
 }
 
 codex_install_complete() {
   local bin_path="$1"
-  local package_dir="$2"
-  local legacy_marker
-
-  [[ -x "$bin_path" ]] || return 1
-  if [[ -L "$bin_path" ]] && codex_package_complete "$package_dir"; then
-    [[ "$bin_path" -ef "$package_dir/bin/codex" ]]
-    return $?
-  fi
-
-  legacy_marker="$(legacy_install_marker "$bin_path")"
-  [[ -f "$legacy_marker" ]]
-}
-
-install_symlink_atomic() {
-  local target="$1"
-  local dest="$2"
-  local dest_dir tmp
-
-  dest_dir="$(dirname "$dest")"
-  mkdir -p "$dest_dir"
-  tmp="${dest_dir}/.${PROG}.$(basename "$dest").link.$$.$RANDOM"
-  rm -f "$tmp"
-  ln -s "$target" "$tmp"
-  if mv -Tf "$tmp" "$dest" 2>/dev/null; then
-    return 0
-  fi
-
-  rm -f "$dest" || {
-    rm -f "$tmp"
-    return 1
-  }
-  mv -f "$tmp" "$dest"
-}
-
-remove_managed_codex_package() {
-  local package_dir="$1"
-  local package_parent
-
-  is_codexi_managed_dir "$package_dir" || return 0
-  package_parent="$(dirname "$package_dir")"
-  rm -rf "$package_dir"
-  rmdir "$package_parent" 2>/dev/null || true
-}
-
-mark_legacy_install() {
-  local bin_path="$1"
-  local target="$2"
-  local marker
-
-  marker="$(legacy_install_marker "$bin_path")"
-  printf 'target=%s\n' "$target" >"$marker"
-}
-
-install_codex_package_archive() {
-  local archive="$1"
-  local package_dir="$2"
-  local bin_path="$3"
-  local target="$4"
-  local package_parent package_name stage backup
-  local package_target package_version legacy_marker
-  local had_previous=0
-
-  package_parent="$(dirname "$package_dir")"
-  package_name="$(basename "$package_dir")"
-  mkdir -p "$package_parent"
-  package_parent="$(cd "$package_parent" && pwd -P)"
-  package_dir="$package_parent/$package_name"
-  stage="$package_parent/.${PROG}.package.new.$$.$RANDOM"
-  backup="$package_parent/.${PROG}.package.old.$$.$RANDOM"
-  rm -rf "$stage" "$backup"
-  mkdir -p "$stage"
-
-  if ! tar -xzf "$archive" -C "$stage"; then
-    rm -rf "$stage"
-    return 1
-  fi
-
-  [[ -f "$stage/codex-package.json" ]] || {
-    rm -rf "$stage"
-    die "Package archive is missing codex-package.json"
-  }
-  [[ -f "$stage/bin/codex" ]] || {
-    rm -rf "$stage"
-    die "Package archive is missing bin/codex"
-  }
-  [[ -f "$stage/bin/codex-code-mode-host" ]] || {
-    rm -rf "$stage"
-    die "Package archive is missing bin/codex-code-mode-host"
-  }
-  [[ -f "$stage/codex-path/rg" ]] || {
-    rm -rf "$stage"
-    die "Package archive is missing codex-path/rg"
-  }
-
-  package_target="$(extract_json_string_field "target" "$stage/codex-package.json" | head -n 1 || true)"
-  if [[ -n "$package_target" && "$package_target" != "$target" ]]; then
-    rm -rf "$stage"
-    die "Package target mismatch: expected $target, found $package_target"
-  fi
-  package_version="$(extract_json_string_field "version" "$stage/codex-package.json" | head -n 1 || true)"
-
-  chmod 0755 "$stage/bin/codex" "$stage/codex-path/rg"
-  chmod 0755 "$stage/bin/codex-code-mode-host"
-  [[ ! -f "$stage/codex-resources/bwrap" ]] || chmod 0755 "$stage/codex-resources/bwrap"
-  [[ ! -f "$stage/codex-resources/zsh/bin/zsh" ]] || chmod 0755 "$stage/codex-resources/zsh/bin/zsh"
-  printf 'version=%s\ntarget=%s\n' "${package_version:-unknown}" "$target" >"$stage/.codexi-managed"
-
-  if [[ -e "$package_dir" || -L "$package_dir" ]]; then
-    if ! is_codexi_managed_dir "$package_dir"; then
-      rm -rf "$stage"
-      die "Refusing to replace unmanaged package directory: $package_dir"
-    fi
-    mv "$package_dir" "$backup"
-    had_previous=1
-  fi
-
-  if ! mv "$stage" "$package_dir"; then
-    if [[ "$had_previous" == "1" ]]; then
-      mv "$backup" "$package_dir" || true
-    fi
-    return 1
-  fi
-
-  if ! install_symlink_atomic "$package_dir/bin/codex" "$bin_path"; then
-    rm -rf "$package_dir"
-    if [[ "$had_previous" == "1" ]]; then
-      mv "$backup" "$package_dir" || true
-    fi
-    return 1
-  fi
-
-  rm -rf "$backup"
-  legacy_marker="$(legacy_install_marker "$bin_path")"
-  rm -f "$legacy_marker"
+  local host_path
+  host_path="$(code_mode_host_path "$bin_path")"
+  [[ -x "$bin_path" && -x "$host_path" ]]
 }
 
 ensure_linux() {
@@ -705,6 +558,52 @@ extract_codex_from_zst() {
   tar -xf "$outdir/codex.tar" -C "$outdir"
 }
 
+install_code_mode_host_for_target() {
+  local base_url="$1"
+  local target="$2"
+  local tmpdir="$3"
+  local bin_path="$4"
+  local host_asset host_path host_dir tar_url zst_url
+
+  host_asset="codex-code-mode-host-${target}"
+  host_path="$(code_mode_host_path "$bin_path")"
+  host_dir="$tmpdir/code-mode-host"
+  tar_url="${base_url}/${host_asset}.tar.gz"
+  zst_url="${base_url}/${host_asset}.zst"
+  mkdir -p "$host_dir"
+
+  log "Checking ${host_asset}.tar.gz"
+  if url_exists "$tar_url"; then
+    log "Downloading ${host_asset}.tar.gz"
+    http_get "$tar_url" "$host_dir/host.tar.gz" || die "Download failed: $tar_url"
+    tar -xzf "$host_dir/host.tar.gz" -C "$host_dir"
+    [[ -f "$host_dir/$host_asset" ]] || die "Extracted archive but binary not found: $host_asset"
+    install_file_atomic "$host_dir/$host_asset" "$host_path"
+    log "Installed code-mode host to: $host_path"
+    return 0
+  fi
+
+  if have zstd; then
+    log "Checking ${host_asset}.zst"
+    if url_exists "$zst_url"; then
+      log "Downloading ${host_asset}.zst"
+      http_get "$zst_url" "$host_dir/host.zst" || die "Download failed: $zst_url"
+      extract_codex_from_zst "$host_dir/host.zst" "$host_dir"
+      [[ -f "$host_dir/$host_asset" ]] || die "Extracted archive but binary not found: $host_asset"
+      install_file_atomic "$host_dir/$host_asset" "$host_path"
+      log "Installed code-mode host to: $host_path"
+      return 0
+    fi
+  else
+    log "Checking ${host_asset}.zst (zstd not installed)"
+    if url_exists "$zst_url"; then
+      die "A code-mode host .zst asset exists, but zstd is not installed"
+    fi
+  fi
+
+  log "No code-mode host asset found for $target; continuing without it"
+}
+
 extract_termux_from_tgz() {
   local archive="$1"
   local outdir="$2"
@@ -778,7 +677,7 @@ cmd_install_or_update() {
     repo="${CODEXI_REPO:-$CODEXI_REPO_DEFAULT}"
   fi
 
-  local default_dir install_dir bin_path package_dir tag
+  local default_dir install_dir bin_path tag
   default_dir="$(default_install_dir)"
   install_dir="${CODEXI_INSTALL_DIR:-$default_dir}"
   bin_path="${CODEXI_BIN_PATH:-$install_dir/codex}"
@@ -799,8 +698,6 @@ cmd_install_or_update() {
     tag=""
   fi
 
-  package_dir="$(codex_package_dir "$bin_path")"
-
   if [[ "$action" == "update" && -z "$tag" ]]; then
     local local_version local_semver remote_tag remote_semver remote_version channel
     local_version=""
@@ -819,11 +716,11 @@ cmd_install_or_update() {
     remote_semver="$(extract_semver "$remote_tag" 2>/dev/null || true)"
 
     if [[ -n "$local_semver" && -n "$remote_semver" && "$local_semver" == "$remote_semver" ]]; then
-      if [[ "$is_termux_mode" == "1" ]] || codex_install_complete "$bin_path" "$package_dir"; then
+      if [[ "$is_termux_mode" == "1" ]] || codex_install_complete "$bin_path"; then
         log "Already up to date: codex-cli $local_semver"
         return 0
       fi
-      log "Codex is current, but its package resources are incomplete; reinstalling"
+      log "Codex is current, but code-mode host is missing; reinstalling"
     fi
 
     if [[ -n "$remote_tag" ]]; then
@@ -855,8 +752,9 @@ cmd_install_or_update() {
     return 0
   fi
 
-  local arch base_url tmpdir platform target package_asset package_tar_url
-  local asset tar_url zst_url
+  maybe_install_bubblewrap "$action"
+
+  local arch base_url tmpdir platform target asset tar_url zst_url
   log "Detecting platform..."
   arch="$(detect_arch)"
   log "Arch: $arch"
@@ -873,25 +771,6 @@ cmd_install_or_update() {
   log "Searching for a matching release asset..."
   while IFS= read -r platform; do
     target="${arch}-${platform}"
-    package_asset="codex-package-${target}"
-    tried+=("$package_asset")
-    package_tar_url="${base_url}/${package_asset}.tar.gz"
-    log "Checking ${package_asset}.tar.gz"
-    if url_exists "$package_tar_url"; then
-      log "Downloading ${package_asset}.tar.gz"
-      http_get "$package_tar_url" "$tmpdir/codex-package.tar.gz" || die "Download failed: $package_tar_url"
-      log "Installing complete Codex package to: $package_dir"
-      install_codex_package_archive "$tmpdir/codex-package.tar.gz" "$package_dir" "$bin_path" "$target" ||
-        die "Failed to install Codex package: $package_asset"
-      log "Installed codex command: $bin_path"
-      if [[ -x "$package_dir/bin/codex-code-mode-host" ]]; then
-        log "Installed code-mode host: $package_dir/bin/codex-code-mode-host"
-      fi
-      rm -rf "$tmpdir"
-      trap - EXIT
-      return 0
-    fi
-
     asset="codex-${arch}-${platform}"
     tried+=("$asset")
 
@@ -903,11 +782,10 @@ cmd_install_or_update() {
       log "Extracting..."
       extract_codex_from_tar_gz "$tmpdir/codex.tar.gz" "$tmpdir"
       [[ -f "$tmpdir/$asset" ]] || die "Extracted archive but binary not found: $asset"
-      maybe_install_bubblewrap "$action"
       log "Installing to: $bin_path"
       install_file_atomic "$tmpdir/$asset" "$bin_path"
-      remove_managed_codex_package "$package_dir"
-      mark_legacy_install "$bin_path" "$target"
+      install_code_mode_host_for_target "$base_url" "$target" "$tmpdir" "$bin_path"
+      remove_obsolete_package_layout "$bin_path"
       log "Installed codex to: $bin_path"
       rm -rf "$tmpdir"
       trap - EXIT
@@ -923,11 +801,10 @@ cmd_install_or_update() {
         log "Extracting..."
         extract_codex_from_zst "$tmpdir/codex.zst" "$tmpdir"
         [[ -f "$tmpdir/$asset" ]] || die "Extracted archive but binary not found: $asset"
-        maybe_install_bubblewrap "$action"
         log "Installing to: $bin_path"
         install_file_atomic "$tmpdir/$asset" "$bin_path"
-        remove_managed_codex_package "$package_dir"
-        mark_legacy_install "$bin_path" "$target"
+        install_code_mode_host_for_target "$base_url" "$target" "$tmpdir" "$bin_path"
+        remove_obsolete_package_layout "$bin_path"
         log "Installed codex to: $bin_path"
         rm -rf "$tmpdir"
         trap - EXIT
@@ -952,9 +829,8 @@ cmd_uninstall() {
   local install_dir="${CODEXI_INSTALL_DIR:-$(default_install_dir)}"
   local bin_path="${CODEXI_BIN_PATH:-$install_dir/codex}"
   local exec_bin_path="${CODEXI_EXEC_BIN_PATH:-$(dirname "$bin_path")/codex-exec}"
-  local package_dir legacy_marker
-  package_dir="$(codex_package_dir "$bin_path")"
-  legacy_marker="$(legacy_install_marker "$bin_path")"
+  local host_path
+  host_path="$(code_mode_host_path "$bin_path")"
 
   if [[ -e "$bin_path" || -L "$bin_path" ]]; then
     rm -f "$bin_path"
@@ -963,11 +839,11 @@ cmd_uninstall() {
     log "Nothing to uninstall (not found): $bin_path"
   fi
   if ! is_termux; then
-    if is_codexi_managed_dir "$package_dir"; then
-      remove_managed_codex_package "$package_dir"
-      log "Removed package: $package_dir"
+    if [[ -e "$host_path" || -L "$host_path" ]]; then
+      rm -f "$host_path"
+      log "Removed: $host_path"
     fi
-    rm -f "$legacy_marker"
+    remove_obsolete_package_layout "$bin_path"
   fi
   if is_termux && [[ -e "$exec_bin_path" ]]; then
     rm -f "$exec_bin_path"
@@ -979,9 +855,8 @@ cmd_status() {
   local install_dir="${CODEXI_INSTALL_DIR:-$(default_install_dir)}"
   local bin_path="${CODEXI_BIN_PATH:-$install_dir/codex}"
   local exec_bin_path="${CODEXI_EXEC_BIN_PATH:-$(dirname "$bin_path")/codex-exec}"
-  local package_dir legacy_marker
-  package_dir="$(codex_package_dir "$bin_path")"
-  legacy_marker="$(legacy_install_marker "$bin_path")"
+  local host_path
+  host_path="$(code_mode_host_path "$bin_path")"
   printf 'codex: %s\n' "$bin_path"
   if is_termux; then
     printf 'codex-exec: %s\n' "$exec_bin_path"
@@ -995,29 +870,11 @@ cmd_status() {
   fi
 
   if ! is_termux; then
-    printf 'package: %s\n' "$package_dir"
-    if [[ -L "$bin_path" ]] && is_managed_codex_package "$package_dir" &&
-      [[ "$bin_path" -ef "$package_dir/bin/codex" ]]; then
-      printf 'install layout: package\n'
-    elif [[ -f "$legacy_marker" ]]; then
-      printf 'install layout: legacy binary\n'
-    else
-      printf 'install layout: incomplete or unmanaged\n'
-    fi
-    if [[ -x "$package_dir/bin/codex-code-mode-host" ]]; then
+    printf 'code-mode host path: %s\n' "$host_path"
+    if [[ -x "$host_path" ]]; then
       printf 'code-mode host: installed\n'
     else
       printf 'code-mode host: missing\n'
-    fi
-    if [[ -x "$package_dir/codex-path/rg" ]]; then
-      printf 'bundled rg: installed\n'
-    else
-      printf 'bundled rg: missing\n'
-    fi
-    if [[ -x "$package_dir/codex-resources/bwrap" ]]; then
-      printf 'bundled bwrap: installed\n'
-    else
-      printf 'bundled bwrap: missing\n'
     fi
   fi
 
@@ -1130,7 +987,7 @@ cmd_self_status() {
 
 cmd_help() {
   cat <<'H'
-codexi - dependency-light Codex package installer for Linux (bash)
+codexi - codex binary installer for Linux (bash)
 
 Usage:
   codexi install [--tag TAG] [--repo OWNER/REPO] [--bin PATH]
@@ -1147,10 +1004,9 @@ Env (codex):
   CODEXI_TAG           default: latest
   CODEXI_INSTALL_DIR   default: ~/.local/bin (Termux: $PREFIX/bin)
   CODEXI_BIN_PATH      default: <install_dir>/codex
-  CODEXI_PACKAGE_DIR   default: <bin_dir>/.codexi/codex (non-Termux)
   CODEXI_LIBC          default: auto (auto=prefer musl, fallback gnu; or set gnu|musl)
   CODEXI_PLATFORM      override platform (e.g. unknown-linux-gnu)
-  CODEXI_BUBBLEWRAP   prompt|install|skip for legacy binary assets (default: prompt)
+  CODEXI_BUBBLEWRAP   prompt|install|skip (default: prompt)
   CODEXI_NO_PROGRESS   set to 1 to disable download progress output
   CODEXI_YES           set to 1 to auto-confirm interactive prompts (e.g. codexi update)
 
